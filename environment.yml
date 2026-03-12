@@ -1,0 +1,10 @@
+name: nback_env_1
+channels:
+  - conda-forge
+dependencies:
+  - python=3.8
+  - numpy<2.0
+  - pandas
+  - pip
+  - pip:
+      - json-tricks
