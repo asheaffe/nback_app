@@ -22,6 +22,27 @@ RESPONSE_WINDOW_TIME  = 2000
 JITTER_RANGE          = (100, 500)
 STOP_TIME             = 500
 REST_TIME             = 30000
+# for debugging set REST_TIME shorter
+# REST_TIME = 1000
+
+
+# timer event IDs
+EV_REST_DONE = pygame.USEREVENT + 1
+EV_STIM_DONE = pygame.USEREVENT + 2
+EV_RESP_DONE = pygame.USEREVENT + 3
+
+
+# state machine states
+STATE_INSTR = "INSTR"
+STATE_LEVEL = "LEVEL_TITLE"
+STATE_REST = "REST"
+STATE_FIXATION = "FIXATION"
+STATE_STIM = "STIM"
+STATE_RESPONSE = "RESPONSE"
+STATE_DONE = "DONE"
+STATE_READY = "READY"
+STATE_CORRECT = "CORRECT"
+STATE_INCORRECT = "INCORRECT"
 
 # colors
 BLACK = (0, 0, 0)
@@ -146,70 +167,135 @@ def pick_nback_symbol(shown_symbols, n_level, symbols, TARGET_RATIO=0.33):
     
     return symbol, is_target
 
+
+
 # game loop 
-running = True
+# state machine variables
+state = STATE_INSTR         # start on instructions
+levels = [0, 1, 2]          # tutorial levels
+level_idx = 0               # index into levels
+n_level = levels[level_idx] # current N val
+trial_idx = 0               # trial counter within current block
+block_len = PRACTICE_LEN    # how many trials per block
+shown_symbols = []          # history of symbols shown for later n-back matching
+current_symbol = None       # current displayed char
+current_is_target = None    # whether current letter is an n-back target
+response_made = False       # bool preventing multiple key presses counting in one trial
+running = True              
+rest_end_ms = None          # used to display countdown during REST state
+
+prev_state = None
 while running:
+    if state != prev_state:
+        print("STATE ->", state)
+        prev_state = state
     # controls spped of loop
     clock.tick(FPS)
 
+    # event handling
     for event in pygame.event.get():
         # check for closing window
         if event.type == pygame.QUIT:
             running = False
-        if event.type == pygame.KEYUP:
-            print(event.unicode)
-            instruction = False
+       
+        # any key from instruction screen -> go to level title
+        elif event.type == pygame.KEYUP and state == STATE_INSTR:
+            state = STATE_LEVEL
+
+        # any key from level title -> go to state ready
+        elif event.type == pygame.KEYUP and state == STATE_LEVEL:
+            state = STATE_READY 
+
+        # any key from ready state -> start rest timer + countdown
+        elif event.type == pygame.KEYUP and state == STATE_READY:
+            state = STATE_REST
+            rest_end_ms = pygame.time.get_ticks() + REST_TIME
+            pygame.time.set_timer(EV_REST_DONE, REST_TIME, 1)
         
+        # key presses during stimulus or response count as a response only once
+        elif event.type == pygame.KEYUP and state in (STATE_STIM, STATE_RESPONSE):
+            if not response_made: 
+                response_made = True
+
+                # if current letter is the target
+                if current_is_target:
+                    state = STATE_CORRECT
+                else:
+                    state = STATE_INCORRECT
+                #TODO: score using current_is_target
+
+        # rest timer finished -> fixation begins
+        elif event.type == EV_REST_DONE and state == STATE_REST: 
+            rest_end_ms = None
+            current_symbol, current_is_target = pick_nback_symbol (shown_symbols, n_level, SYMBOLS)
+            shown_symbols.append(current_symbol) # update n-back history
+            pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
+            state = STATE_STIM
+            pygame.time.set_timer(EV_STIM_DONE, FIXATION_TIME, 1)
+
+        # current phase ended
+        elif event.type == EV_STIM_DONE:
+            # fixation ended -> show stimulus
+            if state == STATE_FIXATION: 
+                state = STATE_STIM
+                
+            # stimulus ended -> resposne window begins
+            elif state == STATE_STIM:
+                state = STATE_RESPONSE
+                pygame.time.set_timer(EV_RESP_DONE, RESPONSE_WINDOW_TIME, 1)
+                current_symbol, current_is_target = pick_nback_symbol (shown_symbols, n_level, SYMBOLS)
+                shown_symbols.append(current_symbol) # update n-back history
+                pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
+
+        # response window finished -> either next trial or next level
+        elif event.type == EV_RESP_DONE and state in (STATE_RESPONSE, STATE_CORRECT, STATE_INCORRECT): 
+            trial_idx += 1
+            response_made = False
+            # finished this block -> advance to next level or DONE
+            if trial_idx >= block_len: 
+                level_idx += 1
+                if level_idx >= len(levels): 
+                    state = STATE_DONE
+                else:
+                    n_level = levels[level_idx]
+                    trial_idx = 0
+                    shown_symbols = [] # reset history for next level
+                    state = STATE_LEVEL
+            # more trials remain -> start next trial w/ fixation
+            else: 
+                state = STATE_STIM
+                pygame.time.set_timer(EV_STIM_DONE, FIXATION_TIME, 1)
 
     screen.fill(BLACK)
-
-    if instruction:
-        # show instruction
+    # rendering
+    if state == STATE_INSTR: 
         blit_text_centered(screen, instruction_text, GAME_FONT, color=WHITE)
-        pygame.display.update()
-    elif tutorial:
-        # list of n-back levels
-        levels = ["0-Back", "1-Back", "2-Back"]
+    elif state == STATE_LEVEL: 
+        blit_text_centered(screen, f"{n_level}-Back (tutorial)\nPress any key", GAME_FONT, color=GREEN)
+    elif state == STATE_REST:
+        now = pygame.time.get_ticks()
+        if rest_end_ms is None:
+            remaining_s = math.ceil(REST_TIME / 1000)
+        else: 
+            remaining_ms = max(0, rest_end_ms - now)
+            remaining_s = math.ceil(remaining_ms / 1000)
+        
+        blit_text_centered(screen, f"+", GAME_FONT, color=WHITE)
+        
+    elif state == STATE_STIM: 
+        blit_text_centered(screen, current_symbol, GAME_FONT, color=WHITE)
+    elif state == STATE_DONE:
+        blit_text_centered(screen, "Done!", GAME_FONT, color=GREEN)
+    elif state == STATE_READY:
+        # prompt the user after the fixation cross
+        blit_text_centered(screen, 'We will begin a rest period. \nPlease stare at the fixation cross for 30 seconds. \nPress any button to begin', GAME_FONT, color=WHITE)
+    elif state == STATE_CORRECT:
+        # display to the user that they are correct
+        blit_text_centered(screen, "Correct!", GAME_FONT, color=GREEN)
+    elif state == STATE_INCORRECT:
+        # display to the user that they are incorrect
+        blit_text_centered(screen, "Incorrect", GAME_FONT, color=RED)
 
-        for i in range(len(levels)):
-            blit_text_centered(screen, levels[i], GAME_FONT, color=GREEN)
-            pygame.display.update()
-
-            # wait for a key press
-            pygame.event.wait()
-            screen.fill(BLACK)
-            pygame.display.update()
-
-            blit_text_centered(screen, rest_text, GAME_FONT, color=WHITE)
-            pygame.display.update()
-            
-            # wait for a key press
-            pygame.event.wait()
-            screen.fill(BLACK)
-            pygame.display.update()
-
-            blit_text_centered(screen, '+', GAME_FONT, color=WHITE)
-            pygame.display.update()
-            pygame.time.set_timer(pygame.USEREVENT+1, REST_TIME, 1)
-
-            shown_symbols = []
-            for trial in range(PRACTICE_LEN):
-                symbol, is_target = pick_nback_symbol(shown_symbols=shown_symbols, n_level=i, symbols=SYMBOLS)
-                
-                # https://www.pygame.org/docs/ref/time.html
-                blit_text_centered(screen, symbol, GAME_FONT, color=WHITE)
-                pygame.display.update()
-
-                # participant should be able respond during this time in addition to response window
-                pygame.time.set_timer(pygame.USEREVENT+2, STIMULUS_DISPLAY_TIME, 1)
-
-                screen.fill(BLACK)
-                pygame.display.update()
-
-                pygame.time.set_timer(pygame.USEREVENT+3, RESPONSE_WINDOW_TIME, 1)
-
-            # practice: go through each nback level once
-            # after practice, randomize nback levels for number of blocks
-
+    pygame.display.update()
 
 pygame.quit()
