@@ -43,6 +43,7 @@ STATE_DONE = "DONE"
 STATE_READY = "READY"
 STATE_CORRECT = "CORRECT"
 STATE_INCORRECT = "INCORRECT"
+STATE_SUMMARY = "SUMMARY"
 
 # colors
 BLACK = (0, 0, 0)
@@ -66,15 +67,6 @@ GAME_FONT = pygame.font.SysFont('Arial', TEXT_SIZE)
 # set tutorial to true to start tutorial at the beginning
 tutorial = True
 instruction = True
-
-instruction_text = "Welcome to the N-back task! \nYou will be presented with a series of letters. " \
-"\nPlease indicate if the letter presented occurred N places back. \nWe will start with a tutorial for all N-back levels (0,1,2). \n\nPress any key to begin."
-
-zero_text = "This is the 0-back task \nPress any button to indicate if the current letter occurred 0 places back in the sequence"
-one_text = "This is the 1-back task \nPress any button to indicate if the current letter occurred 1 places back in the sequence"
-two_text = "This is the 2-back task \nPress any button to indicate if the current letter occurred 2 places back in the sequence"
-
-rest_text = f"Please rest for 30 seconds before beginning the trial"
 
 #### CREDIT: https://gist.github.com/galatolofederico/aa43e0d3bfce5fd6173fb25c8b48e8f3
 def blit_text(surface, text, pos, font, color=pygame.Color('black')):
@@ -184,6 +176,22 @@ response_made = False       # bool preventing multiple key presses counting in o
 running = True              
 rest_end_ms = None          # used to display countdown during REST state
 
+# stat variables to show at the end of the block
+num_correct = 0             # number of correct responses
+num_no_response = 0         # didn't respond when supposed to
+num_false_alarm = 0         # responded when not supposed to
+
+instruction_text = "Welcome to the N-back task! \nYou will be presented with a series of letters. " \
+"\nPlease indicate if the letter presented occurred N places back. \nWe will start with a tutorial for all N-back levels (0,1,2). \n\nPress any key to begin."
+
+zero_text = "This is the 0-back task \nPress any button to indicate if the current letter occurred 0 places back in the sequence"
+one_text = "This is the 1-back task \nPress any button to indicate if the current letter occurred 1 places back in the sequence"
+two_text = "This is the 2-back task \nPress any button to indicate if the current letter occurred 2 places back in the sequence"
+
+block_summary_text = f"BLOCK SUMMARY:\nCorrect Responses: {num_correct}\nFalse Alarms: {num_false_alarm}\nNo Response: {num_no_response}"
+
+rest_text = f"Please rest for 30 seconds before beginning the trial"
+
 prev_state = None
 while running:
     if state != prev_state:
@@ -204,7 +212,22 @@ while running:
 
         # any key from level title -> go to state ready
         elif event.type == pygame.KEYUP and state == STATE_LEVEL:
+            # reset summary variables
+            num_correct = 0             
+            num_no_response = 0         
+            num_false_alarm = 0 
+
             state = STATE_READY 
+
+        # any key from summary -> go to state 
+        elif event.type == pygame.KEYUP and state == STATE_SUMMARY:
+            if level_idx >= len(levels): 
+                state = STATE_DONE
+            else:
+                n_level = levels[level_idx]
+                trial_idx = 0
+                shown_symbols = [] # reset history for next level
+                state = STATE_LEVEL
 
         # any key from ready state -> start rest timer + countdown
         elif event.type == pygame.KEYUP and state == STATE_READY:
@@ -219,17 +242,22 @@ while running:
 
                 # if current letter is the target
                 if current_is_target:
+                    num_correct += 1
                     state = STATE_CORRECT
-                else:
+                elif not current_is_target:
+                    num_false_alarm += 1
                     state = STATE_INCORRECT
                 #TODO: score using current_is_target
 
         # rest timer finished -> fixation begins
         elif event.type == EV_REST_DONE and state == STATE_REST: 
-            rest_end_ms = None
-            current_symbol, current_is_target = pick_nback_symbol (shown_symbols, n_level, SYMBOLS)
-            shown_symbols.append(current_symbol) # update n-back history
+            # get the first stim letter
+            current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
+            shown_symbols.append(current_symbol)
+            state = STATE_STIM
             pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
+
+            rest_end_ms = None
             state = STATE_STIM
             pygame.time.set_timer(EV_STIM_DONE, FIXATION_TIME, 1)
 
@@ -237,34 +265,48 @@ while running:
         elif event.type == EV_STIM_DONE:
             # fixation ended -> show stimulus
             if state == STATE_FIXATION: 
+                current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
+                shown_symbols.append(current_symbol)
                 state = STATE_STIM
+                pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
                 
             # stimulus ended -> resposne window begins
             elif state == STATE_STIM:
                 state = STATE_RESPONSE
                 pygame.time.set_timer(EV_RESP_DONE, RESPONSE_WINDOW_TIME, 1)
-                current_symbol, current_is_target = pick_nback_symbol (shown_symbols, n_level, SYMBOLS)
-                shown_symbols.append(current_symbol) # update n-back history
-                pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
+
+        # show correct/incorrect for response window time
+        # elif event.type == EV_RESP_DONE and state in (STATE_CORRECT, STATE_INCORRECT):
+        #     state = STATE_RESPONSE
 
         # response window finished -> either next trial or next level
         elif event.type == EV_RESP_DONE and state in (STATE_RESPONSE, STATE_CORRECT, STATE_INCORRECT): 
+            # check if a response was made and the user should've responded
+            if not response_made and current_is_target:
+                num_no_response += 1
+
             trial_idx += 1
             response_made = False
+
             # finished this block -> advance to next level or DONE
             if trial_idx >= block_len: 
                 level_idx += 1
-                if level_idx >= len(levels): 
-                    state = STATE_DONE
-                else:
-                    n_level = levels[level_idx]
-                    trial_idx = 0
-                    shown_symbols = [] # reset history for next level
-                    state = STATE_LEVEL
+                state = STATE_SUMMARY
+
+                # if level_idx >= len(levels): 
+                #     state = STATE_DONE
+                # else:
+                #     n_level = levels[level_idx]
+                #     trial_idx = 0
+                #     shown_symbols = [] # reset history for next level
+                #     state = STATE_LEVEL
+
             # more trials remain -> start next trial w/ fixation
             else: 
+                current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
+                shown_symbols.append(current_symbol)
                 state = STATE_STIM
-                pygame.time.set_timer(EV_STIM_DONE, FIXATION_TIME, 1)
+                pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
 
     screen.fill(BLACK)
     # rendering
@@ -295,6 +337,9 @@ while running:
     elif state == STATE_INCORRECT:
         # display to the user that they are incorrect
         blit_text_centered(screen, "Incorrect", GAME_FONT, color=RED)
+    elif state == STATE_SUMMARY:
+        # display stats after block
+        blit_text_centered(screen, f"BLOCK SUMMARY:\nCorrect Responses: {num_correct}\nFalse Alarms: {num_false_alarm}\nNo Response: {num_no_response}", GAME_FONT, color=WHITE)
 
     pygame.display.update()
 
