@@ -197,6 +197,7 @@ print(levels)
 num_correct = 0             # number of correct responses
 num_no_response = 0         # didn't respond when supposed to
 num_false_alarm = 0         # responded when not supposed to
+num_targets = 0             # for total targets in block
 
 instruction_text = "Welcome to the N-back task! \nYou will be presented with a series of letters. " \
 "\nPlease indicate if the letter presented occurred N places back. \nWe will start with a tutorial for all N-back levels (0,1,2). \n\nPress any key to begin."
@@ -233,6 +234,7 @@ while running:
             num_correct = 0             
             num_no_response = 0         
             num_false_alarm = 0 
+            num_targets = 0
 
             print(f"BLOCK: {block_num}\tNBACK LEVEL: {n_level}")
 
@@ -299,6 +301,11 @@ while running:
             # get the first stim letter
             current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
             shown_symbols.append(current_symbol)
+
+            # count the number of targets in a block
+            if current_is_target:
+                num_targets += 1
+
             state = STATE_STIM
             pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
 
@@ -312,13 +319,21 @@ while running:
             if state == STATE_FIXATION: 
                 current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
                 shown_symbols.append(current_symbol)
+                
+                # count the number of total targets
+                if current_is_target:
+                    num_targets += 1
+
                 state = STATE_STIM
                 pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
                 
             # stimulus ended -> resposne window begins
             elif state == STATE_STIM:
                 state = STATE_RESPONSE
-                pygame.time.set_timer(EV_RESP_DONE, RESPONSE_WINDOW_TIME, 1)
+
+                # incorporating jitter to response window
+                jitter_time = int(random.uniform(JITTER_RANGE[0], JITTER_RANGE[1]))
+                pygame.time.set_timer(EV_RESP_DONE, (RESPONSE_WINDOW_TIME + jitter_time), 1)
 
         # show correct/incorrect for response window time
         elif event.type == EV_RESP_DONE and state in (STATE_CORRECT, STATE_INCORRECT):
@@ -357,6 +372,11 @@ while running:
             else: 
                 current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
                 shown_symbols.append(current_symbol)
+
+                # count the number of targets in a block
+                if current_is_target:
+                    num_targets += 1
+
                 state = STATE_STIM
                 pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
 
@@ -393,8 +413,9 @@ while running:
         # display to the user that they are incorrect
         blit_text_centered(screen, "Incorrect", GAME_FONT, color=RED)
     elif state == STATE_SUMMARY:
+        percent_correct = (num_correct/num_targets) * 100
         # display stats after block
-        blit_text_centered(screen, f"BLOCK SUMMARY:\nCorrect Responses: {num_correct}\nFalse Alarms: {num_false_alarm}\nNo Response: {num_no_response}\n\nPress any button to continue", GAME_FONT, color=WHITE)
+        blit_text_centered(screen, f"BLOCK SUMMARY:\nCorrect Responses: {percent_correct}%\nFalse Alarms: {num_false_alarm}\nNo Response: {num_no_response}\n\nPress any button to continue", GAME_FONT, color=WHITE)
 
     pygame.display.update()
 
