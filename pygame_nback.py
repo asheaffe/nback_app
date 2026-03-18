@@ -6,6 +6,12 @@ import random
 import math
 import numpy as np
 import time
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--blocks', type=int, default=9, help='number of experimental blocks to run')
+parser.add_argument('--debug', type=bool, default=False, help='Activate debug mode for fewer trials per block')
+args = parser.parse_args()
 
 # globals
 SIZE = WIDTH, HEIGHT = (1024, 720)
@@ -22,8 +28,13 @@ RESPONSE_WINDOW_TIME  = 2000
 JITTER_RANGE          = (100, 500)
 STOP_TIME             = 500
 REST_TIME             = 30000
+BLOCK_NUM             = args.blocks      # non-practice block number
 # for debugging set REST_TIME shorter
-# REST_TIME = 1000
+DEBUG                 = args.debug      # debug mode
+
+if DEBUG:
+    REST_TIME = 1000
+    TRIAL_LEN = 10
 
 
 # timer event IDs
@@ -159,14 +170,12 @@ def pick_nback_symbol(shown_symbols, n_level, symbols, TARGET_RATIO=0.33):
     
     return symbol, is_target
 
-
-
 # game loop 
 # state machine variables
 state = STATE_INSTR         # start on instructions
-levels = [0, 1, 2]          # tutorial levels
+n_levels = [0, 1, 2]          # tutorial levels
 level_idx = 0               # index into levels
-n_level = levels[level_idx] # current N val
+n_level = n_levels[level_idx] # current N val
 trial_idx = 0               # trial counter within current block
 block_len = PRACTICE_LEN    # how many trials per block
 shown_symbols = []          # history of symbols shown for later n-back matching
@@ -175,6 +184,14 @@ current_is_target = None    # whether current letter is an n-back target
 response_made = False       # bool preventing multiple key presses counting in one trial
 running = True              
 rest_end_ms = None          # used to display countdown during REST state
+block_num = 0
+
+# get the experimental block list
+if BLOCK_NUM % len(n_levels) != 0:
+    print(f"WARNING: {BLOCK_NUM} blocks is not evenly divisible by {len(n_levels)} levels.")
+
+levels = [lvl for lvl in n_levels for _ in range(BLOCK_NUM // len(n_levels))]
+print(levels)
 
 # stat variables to show at the end of the block
 num_correct = 0             # number of correct responses
@@ -195,7 +212,7 @@ rest_text = f"Please rest for 30 seconds before beginning the trial"
 prev_state = None
 while running:
     if state != prev_state:
-        print("STATE ->", state)
+        #print("STATE ->", state)
         prev_state = state
     # controls spped of loop
     clock.tick(FPS)
@@ -217,17 +234,41 @@ while running:
             num_no_response = 0         
             num_false_alarm = 0 
 
+            print(f"BLOCK: {block_num}\tNBACK LEVEL: {n_level}")
+
             state = STATE_READY 
 
         # any key from summary -> go to state 
         elif event.type == pygame.KEYUP and state == STATE_SUMMARY:
-            if level_idx >= len(levels): 
-                state = STATE_DONE
-            else:
-                n_level = levels[level_idx]
-                trial_idx = 0
-                shown_symbols = [] # reset history for next level
+            trial_idx = 0
+            shown_symbols = []
+
+            if tutorial:
+                #level_idx += 1
+                if level_idx < len(n_levels):
+                    # more tutorial levels remain
+                    n_level = n_levels[level_idx]
+                    state = STATE_LEVEL
+                else:
+                    # all tutorial levels done
+                    tutorial = False
+
+                    n_level = random.choice(levels)
+                    levels.remove(n_level)
+
+                    #level_idx = 0
+                    state = STATE_LEVEL
+
+            elif not tutorial and levels: 
+                # randomly choose a level from full list
+                n_level = random.choice(levels)
+                levels.remove(n_level)
+                block_num += 1
                 state = STATE_LEVEL
+
+            else:
+                # end the program
+                state = STATE_DONE
 
         # any key from ready state -> start rest timer + countdown
         elif event.type == pygame.KEYUP and state == STATE_READY:
@@ -240,6 +281,11 @@ while running:
             if not response_made: 
                 response_made = True
 
+                # cancel timers?
+                pygame.time.set_timer(EV_STIM_DONE, 0)
+                pygame.time.set_timer(EV_RESP_DONE, 0)
+                pygame.time.set_timer(EV_RESP_DONE, STOP_TIME, 1)
+
                 # if current letter is the target
                 if current_is_target:
                     num_correct += 1
@@ -247,7 +293,6 @@ while running:
                 elif not current_is_target:
                     num_false_alarm += 1
                     state = STATE_INCORRECT
-                #TODO: score using current_is_target
 
         # rest timer finished -> fixation begins
         elif event.type == EV_REST_DONE and state == STATE_REST: 
@@ -276,11 +321,18 @@ while running:
                 pygame.time.set_timer(EV_RESP_DONE, RESPONSE_WINDOW_TIME, 1)
 
         # show correct/incorrect for response window time
-        # elif event.type == EV_RESP_DONE and state in (STATE_CORRECT, STATE_INCORRECT):
-        #     state = STATE_RESPONSE
+        elif event.type == EV_RESP_DONE and state in (STATE_CORRECT, STATE_INCORRECT):
+            state = STATE_RESPONSE
+            pygame.time.set_timer(EV_RESP_DONE, RESPONSE_WINDOW_TIME - STOP_TIME, 1)
 
         # response window finished -> either next trial or next level
-        elif event.type == EV_RESP_DONE and state in (STATE_RESPONSE, STATE_CORRECT, STATE_INCORRECT): 
+        elif event.type == EV_RESP_DONE and state == STATE_RESPONSE: 
+            # 10 trials for tutorial, 40 trials for actual
+            if tutorial:
+                block_len = PRACTICE_LEN
+            else:
+                block_len = TRIAL_LEN
+            
             # check if a response was made and the user should've responded
             if not response_made and current_is_target:
                 num_no_response += 1
@@ -313,7 +365,10 @@ while running:
     if state == STATE_INSTR: 
         blit_text_centered(screen, instruction_text, GAME_FONT, color=WHITE)
     elif state == STATE_LEVEL: 
-        blit_text_centered(screen, f"{n_level}-Back (tutorial)\nPress any key", GAME_FONT, color=GREEN)
+        if tutorial:
+            blit_text_centered(screen, f"{n_level}-Back (tutorial)\nPress any key", GAME_FONT, color=GREEN)
+        else:
+            blit_text_centered(screen, f"{n_level}-Back\nPress any key", GAME_FONT, color=GREEN)
     elif state == STATE_REST:
         now = pygame.time.get_ticks()
         if rest_end_ms is None:
@@ -331,15 +386,15 @@ while running:
     elif state == STATE_READY:
         # prompt the user after the fixation cross
         blit_text_centered(screen, 'We will begin a rest period. \nPlease stare at the fixation cross for 30 seconds. \nPress any button to begin', GAME_FONT, color=WHITE)
-    elif state == STATE_CORRECT:
+    elif state == STATE_CORRECT and tutorial:
         # display to the user that they are correct
         blit_text_centered(screen, "Correct!", GAME_FONT, color=GREEN)
-    elif state == STATE_INCORRECT:
+    elif state == STATE_INCORRECT and tutorial:
         # display to the user that they are incorrect
         blit_text_centered(screen, "Incorrect", GAME_FONT, color=RED)
     elif state == STATE_SUMMARY:
         # display stats after block
-        blit_text_centered(screen, f"BLOCK SUMMARY:\nCorrect Responses: {num_correct}\nFalse Alarms: {num_false_alarm}\nNo Response: {num_no_response}", GAME_FONT, color=WHITE)
+        blit_text_centered(screen, f"BLOCK SUMMARY:\nCorrect Responses: {num_correct}\nFalse Alarms: {num_false_alarm}\nNo Response: {num_no_response}\n\nPress any button to continue", GAME_FONT, color=WHITE)
 
     pygame.display.update()
 
