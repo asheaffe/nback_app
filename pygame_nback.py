@@ -7,6 +7,7 @@ import math
 import numpy as np
 import time
 import argparse
+import csv 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--blocks', type=int, default=9, help='number of experimental blocks to run')
@@ -62,9 +63,41 @@ WHITE = (255, 255, 255)
 RED = (255, 0, 0)
 GREEN = (0, 255, 0)
 
+trial_results = [] 
+current_response = False 
+current_false_alarm = False 
+current_no_response = False 
+current_is_correct = False 
+
+def save_results_csv(filename, results): 
+    with open (filename, "w", newline="") as f: 
+        writer = csv.writer(f)
+        writer.writerow([
+            "Block number",
+            "N-back",
+            "trial letter",
+            "response",
+            "isCorrect",
+            "falseAlarm",
+            "noResponse"
+        ])
+        for row in results:
+            writer.writerow([
+                row["block_number"],
+                row["n_back"],
+                row["trial_letter"],
+                row["response"],
+                row["isCorrect"],
+                row["falseAlarm"],
+                row["noResponse"]
+            ])
+
 # initialize and create window
 pygame.init()
-pygame.mixer.init()
+try: 
+    pygame.mixer.init()
+except pygame.error: 
+    pass
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("NBACK")
 clock = pygame.time.Clock()
@@ -235,9 +268,10 @@ while running:
             num_no_response = 0         
             num_false_alarm = 0 
             num_targets = 0
-
-            print(f"BLOCK: {block_num}\tNBACK LEVEL: {n_level}")
-
+            if tutorial: 
+                print(f"BLOCK: {block_num}\tNBACK LEVEL: {n_level}")
+            else: 
+                print(f"BLOCK: {block_num + 1}\tNBACK LEVEL: {n_level}")
             state = STATE_READY 
 
         # any key from summary -> go to state 
@@ -282,6 +316,7 @@ while running:
         elif event.type == pygame.KEYUP and state in (STATE_STIM, STATE_RESPONSE):
             if not response_made: 
                 response_made = True
+                current_response = True 
 
                 # cancel timers?
                 pygame.time.set_timer(EV_STIM_DONE, 0)
@@ -291,26 +326,23 @@ while running:
                 # if current letter is the target
                 if current_is_target:
                     num_correct += 1
+                    current_is_correct = True 
+                    current_false_alarm = False 
+                    current_no_response = False 
                     state = STATE_CORRECT
                 elif not current_is_target:
                     num_false_alarm += 1
+                    current_is_correct = False 
+                    current_false_alarm = True 
+                    current_no_response = False 
                     state = STATE_INCORRECT
 
-        # rest timer finished -> fixation begins
+      
+        
+                # rest timer finished -> fixation begins
         elif event.type == EV_REST_DONE and state == STATE_REST: 
-            # get the first stim letter
-            current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
-            shown_symbols.append(current_symbol)
-
-            # count the number of targets in a block
-            if current_is_target:
-                num_targets += 1
-
-            state = STATE_STIM
-            pygame.time.set_timer(EV_STIM_DONE, STIMULUS_DISPLAY_TIME, 1)
-
             rest_end_ms = None
-            state = STATE_STIM
+            state = STATE_FIXATION
             pygame.time.set_timer(EV_STIM_DONE, FIXATION_TIME, 1)
 
         # current phase ended
@@ -319,6 +351,11 @@ while running:
             if state == STATE_FIXATION: 
                 current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
                 shown_symbols.append(current_symbol)
+
+                current_response = False
+                current_false_alarm = False
+                current_no_response = False
+                current_is_correct = False
                 
                 # count the number of total targets
                 if current_is_target:
@@ -347,31 +384,49 @@ while running:
                 block_len = PRACTICE_LEN
             else:
                 block_len = TRIAL_LEN
+                
             
             # check if a response was made and the user should've responded
             if not response_made and current_is_target:
                 num_no_response += 1
+                current_no_response = True 
+                current_is_correct = False 
+            elif not response_made and not current_is_target: 
+                current_no_response = False 
+                current_is_correct = True 
+            
+            block_id = -1 if tutorial else block_num + 1 
+
+            trial_results.append({
+                "block_number": block_id,
+                "n_back": n_level,
+                "trial_letter": current_symbol,
+                "response": current_response,
+                "isCorrect": current_is_correct,
+                "falseAlarm": current_false_alarm,
+                "noResponse": current_no_response
+            })
 
             trial_idx += 1
             response_made = False
 
             # finished this block -> advance to next level or DONE
             if trial_idx >= block_len: 
-                level_idx += 1
+                if tutorial: 
+                    level_idx += 1
                 state = STATE_SUMMARY
 
-                # if level_idx >= len(levels): 
-                #     state = STATE_DONE
-                # else:
-                #     n_level = levels[level_idx]
-                #     trial_idx = 0
-                #     shown_symbols = [] # reset history for next level
-                #     state = STATE_LEVEL
+               
 
-            # more trials remain -> start next trial w/ fixation
+            # more trials remain -> start next trial 
             else: 
                 current_symbol, current_is_target = pick_nback_symbol(shown_symbols, n_level, SYMBOLS)
                 shown_symbols.append(current_symbol)
+
+                current_response = False
+                current_false_alarm = False
+                current_no_response = False
+                current_is_correct = False
 
                 # count the number of targets in a block
                 if current_is_target:
@@ -398,7 +453,10 @@ while running:
             remaining_s = math.ceil(remaining_ms / 1000)
         
         blit_text_centered(screen, f"+", GAME_FONT, color=WHITE)
-        
+    
+    elif state == STATE_FIXATION:
+        blit_text_centered(screen, f"+", GAME_FONT, color=WHITE)
+
     elif state == STATE_STIM: 
         blit_text_centered(screen, current_symbol, GAME_FONT, color=WHITE)
     elif state == STATE_DONE:
@@ -413,10 +471,15 @@ while running:
         # display to the user that they are incorrect
         blit_text_centered(screen, "Incorrect", GAME_FONT, color=RED)
     elif state == STATE_SUMMARY:
-        percent_correct = (num_correct/num_targets) * 100
+        if num_targets != 0: 
+            percent_correct = (num_correct/num_targets) * 100
+        else: 
+            percent_correct = 0
         # display stats after block
         blit_text_centered(screen, f"BLOCK SUMMARY:\nCorrect Responses: {percent_correct}%\nFalse Alarms: {num_false_alarm}\nNo Response: {num_no_response}\n\nPress any button to continue", GAME_FONT, color=WHITE)
 
     pygame.display.update()
 
+timestamp = time.strftime("%Y%m%d_%H%M%S")
+save_results_csv("nback_results_{timestamp}.csv", trial_results)
 pygame.quit()
